@@ -61,6 +61,10 @@ data_65$Xpred1 <- Xpred[,1]
 data_65$Xpred2 <- Xpred[,2]
 data_65$Xpred3 <- Xpred[,3]
 data_65$Xpred4 <- Xpred[,4]
+data_65$id_region1 <- data_65$id_region
+data_65$id_region2 <- data_65$id_region
+data_65$id_region3 <- data_65$id_region
+data_65$id_region4 <- data_65$id_region
 
 ```
 
