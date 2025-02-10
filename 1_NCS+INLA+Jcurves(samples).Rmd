@@ -1,0 +1,292 @@
+---
+title: "02.NCS+INLA"
+output: html_document
+date: "2024-12-03"
+---
+
+```{r}
+library(dlnm)
+library(splines)
+library(INLA)
+library(dplyr)
+library(ggplot2)
+library(spdep)
+```
+
+```{r}
+data_65 <- readRDS("data_65.rds")
+Swiss_new <- readRDS("Swiss_new_update2.rds")#40variables with covariates
+```
+
+# graph (for INLA)
+```{r}
+nb <- spdep::poly2nb(Swiss_new) 
+summary(nb)
+nb2INLA("map_adj", nb) # adjacency map
+
+graph <- inla.read.graph(filename = "map_adj")
+saveRDS(graph, "graph.rds")
+rm(graph)
+```
+
+
+# construct basis function X_dtm
+```{r}
+ref_temp <- 12
+# without intercept
+onebasis_temp <- onebasis(data_65$temperature_lag03, fun = "ns", 
+                          knots=quantile(data_65$temperature_lag03, 
+                                         c(10,75,90)/100, na.rm=T))
+
+# change the reference temperature
+match1<- c("fun",names(formals(attr(onebasis_temp, "fun"))))
+match2<- names(attributes(onebasis_temp))
+
+ind<- match(match1, match2, nomatch = 0) 
+
+varvec <- as.numeric(data_65$temperature_lag03)
+basisvar <- do.call("onebasis", c(list(x=varvec), attributes(onebasis_temp)[ind]))
+
+cen <- ref_temp # reference temp
+basiscen <- do.call("onebasis", c(list(x=cen), attributes(onebasis_temp)[ind]))
+
+# define basis for prediction
+Xpred <- scale(basisvar, center = basiscen, scale = FALSE)
+## Xpred = basisvar - basiscen
+
+rm(match1, match2, ind, varvec, basisvar, basiscen)
+
+# and add to the data
+data_65$Xpred1 <- Xpred[,1]
+data_65$Xpred2 <- Xpred[,2]
+data_65$Xpred3 <- Xpred[,3]
+data_65$Xpred4 <- Xpred[,4]
+
+```
+
+# formula
+
+```{r}
+# PC prior
+hyper_rw2 <- list(theta = list(prior="pc.prec", param=c(0.01, 0.01)))
+hyper_iid <- list(theta = list(prior="pc.prec", param=c(1, 0.01)))
+hyper_bym <- list(theta1 = list('PCprior', c(1, 0.01)), theta2 = list('PCprior', c(0.5, 0.5)))
+```
+
+```{r}
+form_inla_Xpred <- deaths ~ 1 +
+  offset(log(population)) +
+  factor(dow) +
+  factor(holiday) + 
+  Xpred1 + Xpred2 + Xpred3 + Xpred4 + # temperature 
+  f(id_doy, model = "rw2", scale.model = TRUE, constr = TRUE, hyper = hyper_rw2) +
+  f(id_year, model = "iid", constr = TRUE, hyper = hyper_iid) +
+  f(id_region, model = "bym2",graph=graph, hyper = hyper_bym, 
+    scale.model = TRUE, constr = TRUE) +
+  f(id_region1,Xpred1, model = "bym2",graph=graph, hyper = hyper_bym, 
+    scale.model = TRUE, constr = TRUE) +
+  f(id_region2,Xpred2, model = "bym2",graph=graph, hyper = hyper_bym, 
+    scale.model = TRUE, constr = TRUE) +
+  f(id_region3,Xpred3, model = "bym2",graph=graph, hyper = hyper_bym, 
+    scale.model = TRUE, constr = TRUE) +
+  f(id_region4,Xpred4, model = "bym2",graph=graph, hyper = hyper_bym, 
+    scale.model = TRUE, constr = TRUE) 
+```
+
+```{r}
+control.family=inla.set.control.family.default()
+
+t_0 <- Sys.time()
+mod_svc <-  inla(formula = form_inla_Xpred,
+                  family="Poisson",
+                  data=data_65,
+                  verbose = TRUE,
+                  control.family=control.family,
+                  control.compute=list(config = TRUE, dic=TRUE, waic=TRUE),
+                  control.mode=list(restart=T),
+                  num.threads = round(parallel::detectCores()*.8),
+                  control.predictor = list(link = 1))
+
+saveRDS(mod_svc, "mod_svc.rds")
+t_1 <- Sys.time()
+print(t_1 - t_0) # 30 hours
+
+109187/3600 
+
+## and one hour to store the object
+```
+## Sample from the posterior
+```{r}
+
+t_0 <- Sys.time()
+res <- inla.posterior.sample(n = 1000, result = mod_svc)
+t_1 <- Sys.time()
+print(t_1 - t_0) # 1h
+
+t_0 <- Sys.time()
+lapply(res, function(X){
+  X$latent[!startsWith(rownames(X$latent), "Predictor"),] %>% return()
+}) -> res_samples
+t_1 <- Sys.time()
+print(t_1 - t_0) # 1min
+
+t_0 <- Sys.time()
+saveRDS(res_samples, "res_samples_svc.rds")
+t_1 <- Sys.time()
+print(t_1 - t_0) # 20secs
+```
+
+# save coefficients for X_dtm based on INLA results
+```{r}
+res_samples_svc <- readRDS("res_samples_svc.rds")
+```
+
+```{r}
+res_12_df <- data.frame(res_samples_svc[[1]])
+colnames(res_12_df) <- c("sample1")
+for (i in 1:1000) {
+  res_12_df[paste0("sample", i)] <- res_samples_svc[[i]]
+}
+
+res_12_df <- as.data.frame(t(res_12_df)) # save inla results in df
+
+saveRDS(res_12_df, "res_12_df.rds")
+```
+
+```{r}
+# coef for Xpred 1
+reg_X1 <- res_12_df["Xpred1:1"] + res_12_df["id_region1:1"]
+colnames(reg_X1) <- "reg1"
+
+for (i in 2:2145) {
+  reg_col <- res_12_df["Xpred1:1"] + res_12_df[paste0("id_region1:", i)]
+  colnames(reg_col) <- paste0("reg", i)
+  reg_X1 <- cbind(reg_X1, reg_col) #1000*2145
+}
+
+rm(reg_col)
+```
+
+
+```{r}
+# coef for Xpred 2
+reg_X2 <-res_12_df["Xpred2:1"] + res_12_df["id_region2:1"]
+colnames(reg_X2) <- "reg1"
+
+for (i in 2:2145) {
+  reg_col <- res_12_df["Xpred2:1"] + res_12_df[paste0("id_region2:", i)]
+  colnames(reg_col) <- paste0("reg", i)
+  reg_X2 <- cbind(reg_X2, reg_col) #1000*2145
+}
+
+rm(reg_col)
+```
+
+```{r}
+# coef for Xpred 3
+reg_X3 <- res_12_df["Xpred3:1"] + res_12_df["id_region3:1"]
+colnames(reg_X3) <- "reg1"
+
+for (i in 2:2145) {
+  reg_col <- res_12_df["Xpred3:1"] + res_12_df[paste0("id_region3:", i)]
+  colnames(reg_col) <- paste0("reg", i)
+  reg_X3 <- cbind(reg_X3, reg_col) #1000*2145
+}
+
+rm(reg_col)
+```
+
+```{r}
+# coef for Xpred 4
+reg_X4 <- res_12_df["Xpred4:1"] + res_12_df["id_region4:1"]
+colnames(reg_X4) <- "reg1"
+
+for (i in 2:2145) {
+  reg_col <- res_12_df["Xpred4:1"] + res_12_df[paste0("id_region4:", i)]
+  colnames(reg_col) <- paste0("reg", i)
+  reg_X4 <- cbind(reg_X4, reg_col) #200*2145
+}
+
+rm(reg_col)
+```
+
+```{r}
+saveRDS(reg_X1, "reg_X1_ref12.rds")
+saveRDS(reg_X2, "reg_X2_ref12.rds")
+saveRDS(reg_X3, "reg_X3_ref12.rds")
+saveRDS(reg_X4, "reg_X4_ref12.rds")
+```
+
+# run from here (after coefficients are saved)
+```{r}
+reg_X1 <- readRDS("reg_X1_ref12.rds") 
+reg_X2 <- readRDS("reg_X2_ref12.rds")
+reg_X3 <- readRDS("reg_X3_ref12.rds")
+reg_X4 <- readRDS("reg_X4_ref12.rds")
+
+data_65 <- readRDS("data_65.rds")
+```
+
+# sampling basis function
+```{r}
+X_ref12 <- as.data.frame(Xpred)
+X_ref12$temp03 <- data_65$temperature_lag03
+X_ref12 <- X_ref12[order(X_ref12$temp03),]
+first_row <- X_ref12[1, ]
+last_row <- X_ref12[nrow(X_ref12), ]
+sampled_rows <- X_ref12[-c(1, nrow(X_ref12)), ]
+sampled_rows <- sampled_rows[sample(nrow(sampled_rows), 198), ]
+X_ref12_s200<- rbind(first_row, sampled_rows, last_row) 
+X_ref12_s200 <- X_ref12_s200[order(X_ref12_s200$temp03),]
+rm(first_row, last_row, sampled_rows)
+saveRDS(X_ref12_s200, "X_ref12_s200.rds")
+```
+
+```{r}
+X_ref12_s200 <- readRDS("X_ref12_s200.rds")
+```
+
+```{r}
+X1 <- X_ref12_s200[,1]
+X2 <- X_ref12_s200[,2]
+X3 <- X_ref12_s200[,3]
+X4 <- X_ref12_s200[,4]
+```
+
+## sample J-curves
+```{r}
+t_0 <- Sys.time()
+library(parallel)
+
+list_sample_byMuni <- vector("list", 2145)
+
+cl <- makeCluster(detectCores() - 1)
+clusterExport(cl, list("X_ref12_s200", "reg_X1", "reg_X2", "reg_X3", "reg_X4")) 
+process_muni <- function(m) {
+  temp03 <- X_ref12_s200$temp03
+  sp_matrix <- matrix(0, nrow = 200, ncol = 1000) 
+  
+  for (s in 1:1000){
+    co <- c(reg_X1[s, m], reg_X2[s, m], reg_X3[s, m], reg_X4[s, m])
+    sp_matrix[, s] <- as.matrix(X_ref12_s200[, paste0("b", 1:4)]) %*% co
+  }
+  
+  colnames(sp_matrix) <- paste0("sample", 1:1000)
+  byMuni_df <- data.frame(temp03 = temp03, sp_matrix)
+  return(byMuni_df)
+}
+
+list_sample_byMuni <- parLapply(cl, 1:2145, process_muni)#1:2145
+
+
+stopCluster(cl)
+
+
+saveRDS(list_sample_byMuni, "list_sample_byMuni_12ref.rds")
+
+
+t_1 <- Sys.time() #5min
+print(t_1-t_0)
+```
+
+

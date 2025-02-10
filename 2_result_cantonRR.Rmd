@@ -1,0 +1,385 @@
+---
+title: "05.cantonRR"
+output: html_document
+date: "2024-12-04"
+---
+```{r}
+library(dlnm)
+library(splines)
+library(INLA)
+library(dplyr)
+library(ggplot2)
+library(spdep)
+library(lubridate)
+library(reshape2)
+library(RColorBrewer)
+library(sf)
+library(pheatmap)
+library(gplots)
+library(gridExtra)
+library(gtable)
+library(grid)
+```
+
+```{r}
+Kanton_infor <- readRDS("Kanton_infor.rds")
+reg_X1 <- readRDS("reg_X1_ref12.rds") #200*2145
+reg_X2 <- readRDS("reg_X2_ref12.rds")
+reg_X3 <- readRDS("reg_X3_ref12.rds")
+reg_X4 <- readRDS("reg_X4_ref12.rds")
+Swiss_new <- readRDS("Swiss_new_update2.rds")
+X_ref12_s200 <- readRDS("X_ref12_s200.rds")
+data_65 <- readRDS("data_65.rds")
+```
+
+```{r}
+Kanton_infor$name[1] <- "Zurich"
+Kanton_infor$name[18] <-"Graubunden"
+Kanton_infor$name[24]<- "Neuchatel"
+Kanton_infor$name[25]<- "Geneve"
+```
+
+
+# list for canton
+```{r}
+canton_infor <- data.frame(id_region = Swiss_new$id_region, 
+                           KANTONSNUM = Swiss_new$KANTONSNUM)
+canton_list <- vector("list", 26) # need to rerun this for updating the list 
+
+# group id_region in the same id_canton
+for (c in 1:26){#1:26
+  canton_list[[c]] <- canton_infor[canton_infor$KANTONSNUM == c,]
+}
+
+sum <-0
+for (c in 1:26){#1:26
+  sum <- sum + nrow( canton_list[[c]])
+} # sum = 2145
+
+rm(sum, canton_infor)
+
+```
+
+
+```{r}
+# merge population
+pop_df <- data.frame(population = data_65$population, id_region = data_65$id_region)
+pop_muni <- data.frame(id_region = seq(1,2145), population = numeric(2145)) #2145 rows
+for (i in 1:2145) {
+  pop_muni$population[i] <- mean(pop_df[pop_df$id_region == i,]$population)
+}
+rm(pop_df)
+```
+
+
+```{r}
+for (c in 1:26) {#1:26
+  
+  canton_df <- canton_list[[c]] #dataframe for each canton(all municipalities in the canton)
+  canton_df <- merge(canton_df, pop_muni, by = "id_region", all.x = TRUE)
+   # calculate weight for each muni
+  canton_df$weight <- canton_df$population/sum(canton_df$population)
+  
+  canton_list[[c]] <- canton_df
+
+}
+
+rm(pop_muni, canton_df)
+```
+
+```{r}
+t_0 <- Sys.time()
+sample_list_ref12 <- vector("list", 1000) # 1 list for each sample
+for (s in 1:1000) { # for sample 1:1000
+  cant_coef <- data.frame(id_canton = seq(1,26),
+                          beta1 = numeric(26),
+                          beta2 = numeric(26),
+                          beta3 = numeric(26),
+                          beta4 = numeric(26))
+  for (c in 1:26) { # for each canton
+    cant_DF <- canton_list[[c]] #nrow = m
+    muni_id <- cant_DF$id_region # identify id_region in each canton
+    
+    # save coef of muni in each canton in cant_DF
+    for (m in muni_id){ # m represent id_region
+      # original coef
+      cant_DF$coef1 <- reg_X1[s,m]
+      cant_DF$coef2 <- reg_X2[s,m]
+      cant_DF$coef3 <- reg_X3[s,m]
+      cant_DF$coef4 <- reg_X4[s,m]
+    }
+    
+    cant_coef[c,"beta1"] <- sum(cant_DF$coef1 * cant_DF$weight) #beta1 for canton 1
+    cant_coef[c,"beta2"] <- sum(cant_DF$coef2 * cant_DF$weight)
+    cant_coef[c,"beta3"] <- sum(cant_DF$coef3 * cant_DF$weight)
+    cant_coef[c,"beta4"] <- sum(cant_DF$coef4 * cant_DF$weight)
+  }
+  sample_list_ref12[[s]]<- cant_coef
+}
+
+t_1 <- Sys.time()
+print(t_1-t_0) #4.638559 mins
+
+saveRDS(sample_list_ref12, "sample_list_ref12(canton).rds")
+
+rm(cant_DF, muni_id, cant_coef, sample_list_ref12)
+```
+
+```{r}
+sample_list <- readRDS("sample_list_ref12(canton).rds")
+```
+
+```{r}
+t_0 <- Sys.time()
+sp_byCanton_ref12 <- vector("list", 26)
+for (c in 1:26){# for each canton 1:26
+   sp_df_cant <- data.frame(temp03 = X_ref12_s200$temp03) #temp+200splines
+   for (s in 1:1000){ # for each sample
+   coef_s <- sample_list[[s]]
+   co_cant <- as.matrix(c(coef_s[c,"beta1"], coef_s[c,"beta2"], 
+                          coef_s[c,"beta3"], coef_s[c,"beta4"]))
+   sp_cant <- as.matrix(X_ref12_s200[,paste0("b",1:4)]) %*% co_cant
+   colnames(sp_cant) <- paste0("sample",s)  
+   sp_df_cant <- cbind(sp_df_cant, sp_cant) 
+   }
+   
+   heatmap_byCanton_DF <- data.frame(temp03 = X_ref12_s200$temp03,
+                                  median = numeric(200),
+                                  mean = numeric(200),
+                                  LL = numeric(200),
+                                  UL = numeric(200),
+                                  sd = numeric(200),
+                                  CrI_range = numeric(200),
+                                  post1 = numeric(200),
+                                  postMean = numeric(200)
+                                  )# save median, uncertainty for each canton
+   for (t in 1:nrow(sp_df_cant)){ # for each temp points 1:200
+   heatmap_byCanton_DF[t,"median"] <- median(as.numeric(exp(sp_df_cant[t,2:1001])))
+   heatmap_byCanton_DF[t,"mean"] <- mean(as.numeric(exp(sp_df_cant[t,2:1001])))
+   heatmap_byCanton_DF[t,"LL"] <-
+    quantile(as.numeric(exp(sp_df_cant[t,2:1001])), probs = 0.025)
+   heatmap_byCanton_DF[t,"UL"] <-
+    quantile(as.numeric(exp(sp_df_cant[t,2:1001])), probs = 0.975)
+   heatmap_byCanton_DF[t,"sd"] <- sd(as.numeric(exp(sp_df_cant[t,2:1001])))
+   heatmap_byCanton_DF[t,"CrI_range"] <-
+     quantile(as.numeric(exp(sp_df_cant[t,2:1001])), probs = 0.975) -
+     quantile(as.numeric(exp(sp_df_cant[t,2:1001])), probs = 0.025)
+   heatmap_byCanton_DF[t,"post1"] <- mean(as.numeric(exp(sp_df_cant[t,2:1001]))>1)
+   #run this line(postMean) after the overall mean is calculated in the following chunk
+   heatmap_byCanton_DF[t,"postMean"] <-
+     mean(as.numeric(exp(sp_df_cant[t,2:1001]))>overall_mean)
+   }
+   
+   sp_byCanton_ref12[[c]]<- heatmap_byCanton_DF
+   
+}
+
+t_1<- Sys.time()
+print(t_1-t_0)
+
+for (c in 1:26) {
+  sp_byCanton_ref12[[c]]$id_canton <- c
+}
+
+saveRDS(sp_byCanton_ref12, "sp_byCanton_ref12.rds")#10.51614 mins
+ rm(heatmap_byCanton_DF, sp_df_cant, coef_s,sp_cant, sp_byCanton_ref12)
+```
+
+```{r}
+### to calculate the overall mean for posterior mean calculation in the chunk above
+sp_byCanton_ref12 <- readRDS("sp_byCanton_ref12.rds")
+mean_byCanton <- data.frame(id_canton = seq(1,26),
+                            mean_RR = numeric(26))
+for (c in 1:26){ # calculate mean RR over temp in each canton
+  mean_byCanton[c,"mean_RR"] <- mean(sp_byCanton_ref12[[c]]$mean)
+}
+
+overall_mean <- mean(mean_byCanton$mean_RR)#1.035029
+
+rm(mean_byCanton)
+
+```
+
+
+```{r}
+mean_byCanton <- data.frame(id_canton = seq(1,26),
+                            mean_RR = numeric(26))
+for (c in 1:26){ # calculate mean RR over temp in each canton
+  mean_byCanton[c,"mean_RR"] <- mean(sp_byCanton[[c]]$mean[21:200])###
+}
+## to sort
+sort_cantons <- mean_byCanton[order(mean_byCanton$mean_RR),]
+sort_cantons <- merge(sort_cantons, Kanton_infor, by = "id_canton")
+sort_cantons <- sort_cantons[order(sort_cantons$mean_RR, decreasing = TRUE),]
+sort_cantons$sortnum <- c(1:26)
+```
+
+# sort subgraphs
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(grid)
+
+plots <- list()
+
+plot_canton <- function(df, c) {
+  ggplot(df, aes(x = temp03)) +
+    geom_line(aes(y = median)) +
+    geom_ribbon(aes(ymin = LL, ymax = UL), fill = "blue", alpha = 0.3) +
+    labs(title = Kanton_infor[c,"name"], x = "", y = "") +
+    geom_hline(yintercept = 1, col = "red", linetype = "dashed") +
+    theme_bw() + ylim (0.3,3) 
+}
+
+for (c in 1:26) {
+  plots[[c]] <- plot_canton(sp_byCanton[[c]], c)
+}
+
+#titles <- sapply(1:26, function(c) Kanton_infor[c, "name"])
+
+sorted_indices <- sort_cantons$id_canton
+  #order(titles)
+
+sorted_plots <- plots[sorted_indices]
+
+combined_plots <- arrangeGrob(grobs = sorted_plots, nrow = 5, ncol = 6)
+
+grid.newpage()
+grid.draw(combined_plots)
+
+final_plot <- grid.grab()
+
+final_plot_with_margin <- arrangeGrob(final_plot,
+                                      bottom = textGrob("Mean Temperature (lag 0-3) (\u00B0C)", 
+                                                        gp = gpar(fontsize = 36)),
+                                      left = textGrob("Relative Risk", rot = 90, 
+                                                      gp = gpar(fontsize = 36)))
+
+ggsave(filename = "combined_canton_splines_ref12(sorted_byRR).png",
+       plot = final_plot_with_margin, width = 24, height = 30, dpi = 300)
+```
+
+
+```{r}
+# combine list to a large dataframe
+hm_data_long <- do.call(rbind, sp_byCanton)
+
+
+custom_tick_labels <- function(total_ticks, max_labels) {
+  step <- ceiling((total_ticks - 2) / (max_labels - 1))  
+  positions <- c(1, seq(1 + step, total_ticks - step, by = step), total_ticks)
+  return(unique(positions))
+}
+```
+
+```{r}
+temp_quan <- quantile(X_ref12_s200$temp03, probs = seq(0, 1, by = 0.1), na.rm = TRUE)
+temp_quan
+```
+```{r}
+#median
+hm_median_wide <- dcast(hm_data_long, id_canton ~ temp03, value.var = "median")
+rownames(hm_median_wide) <- hm_median_wide$id_canton
+hm_median_wide <- hm_median_wide[,-1]
+hm_median_wide[] <- lapply(hm_median_wide, as.numeric)
+for (c in 1:26){
+  rownames(hm_median_wide)[c]<- Kanton_infor[c,"name"]
+}
+
+hm_median_wide <- hm_median_wide[sort_cantons$name, ] #sort by mean RR
+# sort row names
+#hm_median_wide <- hm_median_wide[sort(rownames(hm_median_wide)),]
+```
+
+```{r}
+range(hm_median_wide)
+```
+```{r}
+x_labels_pos <- custom_tick_labels(ncol(hm_median_wide), max_labels = 20)
+x_labels <- rep("", ncol(hm_median_wide))  
+x_labels[x_labels_pos] <- 
+  paste0(round(as.numeric(colnames(hm_median_wide)[x_labels_pos]),2),"\u00B0C")
+
+breaks <- c(seq(0.95,1.05, length.out = 21),1.2,1.4,1.62) 
+
+
+colors <- c(rev(colorRampPalette(brewer.pal(9, "Blues"))(16)[-c(1,2,3,14,15,16)]),
+             "white",colorRampPalette(brewer.pal(9, "Reds"))(16)[-c(1,2,3,14,15,16)],
+            colorRampPalette(brewer.pal(9, "Reds"))(16)[c(14,15,16)]) 
+
+```
+
+```{r}
+p_heatmap_median<- ComplexHeatmap::pheatmap(as.matrix(hm_median_wide), scale = "none", 
+         cluster_rows = FALSE, cluster_cols = FALSE, 
+         color = colors,
+           #colorRampPalette(c("darkgreen", "white", "darkred"))(21), 
+         main = "A. Relative mortality risk across cantons                  ",
+         show_rownames = TRUE, ###
+         name = " ", 
+         row_names_side = "left",
+         labels_col = x_labels, angle_col = "315",                        
+         fontsize_row = 8,  fontsize_col = 8, breaks =breaks)
+
+
+p_heatmap_median
+```
+```{r}
+#postMean
+hm_postMean_wide <- dcast(hm_data_long, id_canton ~ temp03, value.var = "postMean")
+rownames(hm_postMean_wide) <- hm_postMean_wide$id_canton
+hm_postMean_wide <- hm_postMean_wide[,-1]
+for (c in 1:26){
+  rownames(hm_postMean_wide)[c]<- Kanton_infor[c,"name"]
+}
+
+# sort row names
+#hm_postMean_wide <- hm_postMean_wide[sort(rownames(hm_postMean_wide)),]
+hm_postMean_wide<- hm_postMean_wide[sort_cantons$name, ] #sort by mean RR
+```
+
+```{r}
+x_labels_pos <- custom_tick_labels(ncol(hm_postMean_wide), max_labels = 20)
+x_labels <- rep("", ncol(hm_postMean_wide))  
+x_labels[x_labels_pos] <- 
+  paste0(round(as.numeric(colnames(hm_postMean_wide)[x_labels_pos]),2),"\u00B0C")
+
+breaks <- seq(0, 1, length.out = 21)
+```
+
+```{r}
+p_heatmap_postMean<- ComplexHeatmap::pheatmap(as.matrix(hm_postMean_wide), scale = "none", 
+         cluster_rows = FALSE, cluster_cols = FALSE, 
+         color = colorRampPalette(brewer.pal(9, "Greens"))(31)[-c(1:10)], 
+         main = "B. Exceedance probability Pr(RR>mean)                  ",
+         show_rownames = TRUE, ###
+         name = " ", #P(RR>mean)
+         row_names_side = "left",
+         labels_col = x_labels, angle_col = "315",                        
+         fontsize_row = 8,  fontsize_col = 8, breaks =breaks)
+
+
+p_heatmap_postMean
+
+```
+```{r}
+library(gridExtra)
+library(grid)
+library(gridGraphics)
+library(ComplexHeatmap)
+p_heatmap_median
+p_heatmap_postMean
+
+
+draw(p_heatmap_median, heatmap_legend_side = "right")
+g1 <- grid.grab()
+
+draw(p_heatmap_postMean, heatmap_legend_side = "right")
+g2 <- grid.grab()
+
+
+heatmap_fig <- grid.arrange(g1, g2, ncol = 2)
+heatmap_fig
+
+ggsave("heatmap_fig_ref12(sortbyRR).png", heatmap_fig, width = 12.5, height = 4, dpi = 300)
+```

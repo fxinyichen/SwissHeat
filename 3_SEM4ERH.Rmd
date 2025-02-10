@@ -1,0 +1,227 @@
+---
+title: "3.SEM"
+output: html_document
+date: "2025-02-04"
+---
+
+```{r}
+library(dlnm)
+library(splines)
+library(INLA)
+library(dplyr)
+library(ggplot2)
+library(spdep)
+library(reshape2)
+library(RColorBrewer)
+library(sf)
+library(viridis)
+
+```
+
+```{r}
+Swiss_new <- readRDS("Swiss_new_update2.rds")
+# cut deprivation (SEP) by percentile
+Swiss_new$SEP_cat <- cut(Swiss_new$deprivation, 
+                          breaks = quantile(Swiss_new$deprivation, 
+                                            probs = c(0, 0.33, 0.66,  1)),
+                          include.lowest = TRUE,
+                          labels = c("1", "2", "3"))  
+```
+
+
+
+# without uncertainty
+```{r}
+graph <- readRDS("graph.rds")
+list_tempbin2_v2 <- readRDS("list_tempbin2_v2ER.rds") 
+map_muni_6 <- data.frame(id_region = seq(1,2145))
+
+for (m in 1:2145){
+   map_muni_6$excessRateMed[m] <- median(list_tempbin2_v2[[m]]$excessRate)
+}
+Swiss_new$ERH <- map_muni_6$excessRateMed
+hyper_iid <- list(theta = list(prior="pc.prec", param=c(1, 0.01)))
+hyper_bym <- list(theta1 = list('PCprior', c(1, 0.01)), theta2 = list('PCprior', c(0.5, 0.5)))
+
+form_ERH_modifiers_Heat <- ERH ~ 1 + factor(language) + factor(urbanicity) +
+  factor(SEP_cat) + scale(aver_temp03) + scale(greenspace) + scale(propAG85) + 
+  f(id_region, model = "bym2",graph=graph, hyper = hyper_bym,
+    scale.model = TRUE, constr = TRUE) +
+  f(KANTONSNUM, model = 'iid', constr = TRUE, hyper = hyper_iid)
+
+
+t_0 <- Sys.time()
+mod_ER_byms_v2 <-  inla(formula = form_ERH_modifiers_Heat,
+                  data=Swiss_new,
+                  verbose = F,##
+                  control.family=inla.set.control.family.default(),
+                  control.compute=list(config = TRUE, dic=TRUE, waic=TRUE),
+                  control.mode=list(restart=T),
+                  num.threads = round(parallel::detectCores()*.8),
+                  control.predictor = list(link = 1))
+
+t_1 <- Sys.time() 
+print(t_1 - t_0) 
+```
+
+
+```{r}
+approach1_ERHeat<- mod_ER_byms_v2$summary.fixed
+approach1_ERHeat$variable <- rownames(approach1_ERHeat)
+approach1_ERHeat<- approach1_ERHeat[-1,]
+approach1_ERHeat$Method <- "without uncertainty"
+
+
+saveRDS(approach1_ERHeat, "SEM_ERHeat_withoutUncert.rds")
+
+approach1 <- readRDS("SEM_ERHeat_withoutUncert.rds")
+```
+
+# uncertainty propagation
+```{r}
+ER_data <- cbind(id_region = seq(1,2145), do.call(rbind, lapply(list_tempbin2_v2, function(df) df$excessRate)))%>%as.data.frame()
+
+colnames(ER_data) <-c("id_region", paste0("ER_sample", 1:1000)) 
+set.seed(123)
+sample_columns <- sample(2:1001, 200) 
+ER_sampled<- ER_data[, c(1, sample_columns)]
+colnames(ER_sampled) <-c("id_region", paste0("ER_samp", 1:200)) 
+
+saveRDS(ER_sampled, "ER_sampled_v2.rds") 
+ER_sampled <- readRDS("ER_sampled_v2.rds")
+
+```
+
+```{r}
+Swiss_new_ER <- merge(Swiss_new, ER_sampled, by = "id_region")
+hyper_iid <- list(theta = list(prior="pc.prec", param=c(1, 0.01)))
+hyper_bym <- list(theta1 = list('PCprior', c(1, 0.01)), theta2 = list('PCprior', c(0.5, 0.5)))
+```
+
+```{r}
+coeffs_df <- data.frame(matrix(ncol = 0,nrow = 9))### cat SEP
+t_0 <- Sys.time()
+for(i in 1:200){#1:200
+form_ERH_modifiers_Heat <- as.formula(paste0("ER_samp", i, " ~ 1 + factor(language) + factor(urbanicity) + factor(SEP_cat) + scale(aver_temp03) + scale(greenspace) + scale(propAG85) + f(id_region, model = 'bym2', graph = graph, hyper = hyper_bym, scale.model = TRUE, constr = TRUE) + f(KANTONSNUM, model = 'iid', constr = TRUE, hyper = hyper_iid)"))
+
+  mod_byms_v2 <-  inla(formula = form_ERH_modifiers_Heat ,
+                  data=Swiss_new_ER,
+                  verbose = F,##
+                  control.family=inla.set.control.family.default(),
+                  control.compute=list(config = TRUE, dic=TRUE, waic=TRUE),
+                  control.mode=list(restart=T),
+                  num.threads = round(parallel::detectCores()*.8),
+                  control.predictor = list(link = 1))
+   sampleList <- inla.posterior.sample(mod_byms_v2,n = 100)
+   extracted_data <- lapply(sampleList, function(x) tail(x$latent, 9)) #covariates
+   df_result <- do.call(cbind, extracted_data)
+   coeffs_df <- cbind(coeffs_df, df_result)
+}
+t_1 <- Sys.time() 
+print(t_1 - t_0) #2.1hours
+
+saveRDS(coeffs_df,"coeffs_df_ERH_Heat_3SEP.rds")
+```
+
+```{r}
+df_approach2 <- readRDS("coeffs_df_ERH_Heat_3SEP.rds")
+
+#prepare plots for approach2
+approach2 <- data.frame(matrix(ncol=0, nrow = 9))#cat SEP
+approach2$variable <- rownames(df_approach2)
+df_approach2 <- as.data.frame(t(df_approach2)) 
+
+approach2$mean <- apply(df_approach2, 2, mean) %>% as.vector()
+approach2$`0.5quant` <- apply(df_approach2, 2, median) %>% as.vector()
+
+approach2$`0.025quant` <- apply(df_approach2, 2, function(x) quantile(x, 0.025))%>% as.vector()
+approach2$`0.975quant` <- apply(df_approach2, 2, function(x) quantile(x, 0.975))%>% as.vector()
+
+approach2$Method <- "uncertainty propagation"
+
+saveRDS(approach2, "SEM_ERHeat_Uncert.rds")
+
+```
+
+#plot
+```{r}
+approach1 <- readRDS("SEM_ERHeat_withoutUncert.rds")
+approach2 <- readRDS("SEM_ERHeat_Uncert.rds")
+```
+
+```{r}
+app1 <- approach1 %>% select("variable", "mean", "0.5quant", "0.025quant", "0.975quant", "Method")
+rownames(app1) <- 1:9
+
+app2 <- approach2 %>% select("variable", "mean", "0.5quant", "0.025quant", "0.975quant", "Method")
+rownames(app2) <- 1:9
+
+approachs_comp <- rbind(app1,app2)
+
+# rename 
+##factor(language)2
+approachs_comp$variable[approachs_comp$variable=="factor(language)2:1"] <- "French" 
+approachs_comp$variable[approachs_comp$variable=="factor(language)2"] <- "French"
+##factor(language)3
+approachs_comp$variable[approachs_comp$variable=="factor(language)3:1"] <- "Italian" 
+approachs_comp$variable[approachs_comp$variable=="factor(language)3"] <- "Italian"
+##factor(urbanicity)2
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2:1"] <- "Medium density area"
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2"] <- "Medium density area"
+##factor(urbanicity)3
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)3:1"] <- "Low density area"
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)3"] <- "Low density area"
+## factor(SEP_cat)2
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)2"] <- "Median SEP"
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)2:1"] <- "Median SEP"
+## factor(SEP_cat)3
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)3"] <- "High SEP"
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)3:1"] <- "High SEP"
+##scale(aver_temp03)
+approachs_comp$variable[approachs_comp$variable=="scale(aver_temp03):1"] <- "Average temperature"
+approachs_comp$variable[approachs_comp$variable=="scale(aver_temp03)"] <- "Average temperature"
+##scale(greenspace)
+approachs_comp$variable[approachs_comp$variable=="scale(greenspace):1"] <- "Green space"
+approachs_comp$variable[approachs_comp$variable=="scale(greenspace)"] <- "Green space"
+##scale(propAG85)
+approachs_comp$variable[approachs_comp$variable=="scale(propAG85):1"] <- "Proportion (85+)"
+approachs_comp$variable[approachs_comp$variable=="scale(propAG85)"] <- "Proportion (85+)"
+##method
+approachs_comp$variable <- factor(approachs_comp$variable, levels = unique(approachs_comp$variable))
+```
+
+```{r}
+# results *1000 (per thousand pop)
+approachs_comp$mean <- 1000 * approachs_comp$mean 
+approachs_comp$`0.5quant` <- 1000 * approachs_comp$`0.5quant`
+approachs_comp$`0.025quant`<- 1000*approachs_comp$`0.025quant`
+approachs_comp$`0.975quant`<- 1000*approachs_comp$`0.975quant`
+```
+
+
+```{r}
+p_comp_SEM_ERH_Heat <- ggplot(approachs_comp, aes(x = Method, y = mean)) + 
+  geom_hline(yintercept = 0, linetype = 2, color = "red") + 
+  geom_errorbar(aes(ymin = `0.025quant`, ymax = `0.975quant`), width = 0.2) + 
+  geom_point(aes(y = `0.5quant`)) +  
+  coord_flip() +                                                
+  theme_bw() +                                             
+  labs(x = "", y = " ", title = "A. Effects of spatial modifiers on ERH ") +
+  ylim(-1.5,1.5)+
+  theme(
+    legend.position = "right",
+    legend.text = element_text(size = 12),    
+    strip.text = element_text(size = 15),        
+    axis.text.x = element_text(size = 15),
+    axis.text.y = element_text(size = 15),
+  legend.title = element_blank(),
+    plot.title = element_text(face = "bold",size = 15)
+  ) +
+  facet_wrap(~ variable, ncol = 3) #scales = "free_x"
+
+p_comp_SEM_ERH_Heat
+
+ggsave("p_comp_SEM_ERH_Heat_3SEP.png",p_comp_SEM_ERH_Heat, width = 12, height = 4, dpi = 300)
+```
+
+

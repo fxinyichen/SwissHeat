@@ -1,0 +1,547 @@
+---
+title: "03.results"
+output: html_document
+date: "2024-12-03"
+---
+
+```{r}
+library(dlnm)
+library(splines)
+library(INLA)
+library(dplyr)
+library(ggplot2)
+library(spdep)
+library(lubridate)
+library(reshape2)
+library(RColorBrewer)
+library(sf)
+library(gridExtra)
+library(grid)
+library(patchwork)
+library(viridis)
+```
+
+#1. J-shape: Nationwide + muni level
+```{r}
+reg_X1 <- readRDS("reg_X1_ref12.rds") #2145:1000
+reg_X2 <- readRDS("reg_X2_ref12.rds")
+reg_X3 <- readRDS("reg_X3_ref12.rds")
+reg_X4 <- readRDS("reg_X4_ref12.rds")
+X_ref12_s200 <- readRDS("X_ref12_s200.rds")
+```
+
+
+```{r}
+coef_bySpace <- data.frame(X1_median = numeric(2145),
+                           X2_median = numeric(2145),
+                           X3_median = numeric(2145),
+                           X4_median = numeric(2145)) #2145*4
+
+row.names(coef_bySpace) <- paste0("reg", 1:2145)
+
+for (i in 1:2145) {
+  coef_bySpace[i, "X1_median"] <- quantile(reg_X1[[paste0("reg", i)]], probs = 0.5)
+  coef_bySpace[i, "X2_median"] <- quantile(reg_X2[[paste0("reg", i)]], probs = 0.5)
+  coef_bySpace[i, "X3_median"] <- quantile(reg_X3[[paste0("reg", i)]], probs = 0.5)
+  coef_bySpace[i, "X4_median"] <- quantile(reg_X4[[paste0("reg", i)]], probs = 0.5)
+}
+```
+
+
+```{r}
+spag_12_df <- data.frame(matrix(nrow = nrow(X_ref12_s200), ncol = 2145)) # 2145cols
+for (i in 1:2145) {
+  spag_12_df[, i] <- 
+    as.matrix(X_ref12_s200[,1:4]) %*% t(coef_bySpace[i,])
+  }
+colnames(spag_12_df) <- paste0("reg", 1:2145)
+spag_12_df$temp03 <- X_ref12_s200$temp03
+
+spagDF_melt <- melt(spag_12_df, id.vars = "temp03", variable.name = "reg", value.name = "value")
+
+sum(is.na(spagDF_melt))
+```
+
+
+```{r}
+res_12_df <- readRDS("res_12_df.rds")
+```
+
+```{r}
+overall_coef <- data.frame(beta1 = res_12_df[["Xpred1:1"]], 
+                           beta2 = res_12_df[["Xpred2:1"]],
+                           beta3 = res_12_df[["Xpred3:1"]],
+                           beta4 = res_12_df[["Xpred4:1"]])#1000*4
+```
+
+```{r}
+overall_splines <- data.frame(temp03 = X_ref12_s200$temp03) #
+for (s in 1:1000){
+  co <- as.matrix(overall_coef[s,])
+  sp <- as.matrix(X_ref12_s200[,paste0("b",1:4)]) %*% t(co)
+  
+  colnames(sp) <- paste0("sample",s)
+  overall_splines <- cbind(overall_splines, sp)
+}
+```
+
+```{r}
+overall_plot_DF <- data.frame(temp03 = X_ref12_s200$temp03,
+                              overall_med = numeric(200),
+                              overall_LL = numeric(200),
+                              overall_UL = numeric(200))
+for (t in 1:200) {
+  overall_plot_DF[t,"overall_med"] <- 
+    quantile(unlist(overall_splines[t,2:1001]), probs = 0.5)
+  overall_plot_DF[t,"overall_LL"] <- 
+    quantile(unlist(overall_splines[t,2:1001]), probs = 0.025)
+  overall_plot_DF[t,"overall_UL"] <- 
+    quantile(unlist(overall_splines[t,2:1001]), probs = 0.975)
+}
+
+
+saveRDS(overall_plot_DF, "overall_plot_DF_12.rds")
+overall_plot_DF <- readRDS("overall_plot_DF_12.rds")
+```
+
+
+
+```{r}
+p_overall_12 <- ggplot(data = overall_plot_DF) +
+  geom_line(aes(x = temp03, y = exp(overall_med)), col = "black") +
+  geom_ribbon(aes(x = temp03, ymin = exp(overall_LL), ymax = exp(overall_UL)), 
+              alpha = 0.5, fill = "lightblue", col = NA) +
+  geom_hline(yintercept = 1, col = "red", linetype = "dashed") +
+   #geom_vline(xintercept = 12, col = "red", linetype = "dashed") +
+  xlab("Mean Temperature (lag 0-3) (\u00B0C)") + ylab("Relative Risk") + ###
+  ggtitle("A. Nationwide relative mortality risk") +
+  theme_bw() +ylim(0.8,1.85) +
+  theme(axis.title = element_text(size = 15),  
+         legend.title = element_text(size = 15), 
+         legend.text = element_text(size = 15),
+          axis.text = element_text(size = 15),
+        plot.title = element_text(face = "bold"))
+
+n_colors <- length(unique(spagDF_melt$reg))
+colors <- colorRampPalette(brewer.pal(9, "Spectral"))(n_colors)
+
+p_spag_12 <- 
+  ggplot(data = spagDF_melt, aes(x = temp03, y = exp(value), group = reg)) +
+  geom_line(aes(color = as.numeric(reg))) +
+  geom_hline(yintercept = 1, col = "red", linetype = "dashed") +
+  scale_color_gradientn(colors = colors, 
+                         guide = guide_colorbar(title = "Municipalities")) + 
+  
+  labs(title = "B. Relative mortality risk across municipalities",
+       x = "Mean Temperature (lag 0-3) (\u00B0C)",
+       y = "") + ylim(0.8,1.85) + theme_bw() +
+  theme(axis.title = element_text(size = 15),  
+         legend.title = element_text(size = 15), 
+         legend.text = element_text(size = 15),
+          axis.text = element_text(size = 15),
+        plot.title = element_text(face = "bold"))
+
+
+p_overall_12
+p_spag_12
+
+fig_effect_12 <- p_overall_12 | p_spag_12
+fig_effect_12
+
+ggsave("fig_effect_12.png", fig_effect_12, width = 12.5, height = 4, dpi = 300)
+```
+
+#2. ERH and AF
+
+```{r}
+list_sample_byMuni <- readRDS("list_sample_byMuni_12ref.rds")
+Swiss_new <- readRDS("Swiss_new_update2.rds")
+X_ref12_s200 <- readRDS("X_ref12_s200.rds")
+```
+
+```{r}
+which.min(abs(X_ref12_s200$temp03 - 12))
+X_ref12_s200$temp03[21]#12.15991
+# update X_ref12_s200 to >12oC for heat effect
+X_ref12_s200 <- X_ref12_s200[-c(1:20),]#180obs
+```
+
+```{r}
+data_65 <- readRDS("data_65.rds")
+#by muni
+pop_df <- aggregate(population~id_region, data = data_65, FUN = "mean")
+death_df <- aggregate(deaths~id_region, data = data_65, FUN = "sum")
+pop_death <- merge(pop_df, death_df, by = c("id_region"))
+rm(pop_df, death_df)
+
+#by tempbin & muni
+temp_bound <- X_ref12_s200$temp03#180
+data_65$temp03_interval <- cut(data_65$temperature_lag03, 
+                               breaks = temp_bound, 
+                               include.lowest = TRUE, right = FALSE)
+
+pop_df2 <- aggregate(population~id_region + temp03_interval, data = data_65, FUN = "mean")
+death_df2 <- aggregate(deaths~id_region + temp03_interval, data = data_65, FUN = "sum")
+pop_death2 <- merge(pop_df2, death_df2, by = c("id_region", "temp03_interval"))
+rm(pop_df2, death_df2)
+
+
+saveRDS(pop_death, "pop_death.rds")
+saveRDS(pop_death2, "pop_death2_v2.rds")
+
+pop_death <- readRDS("pop_death.rds")
+pop_death2 <- readRDS("pop_death2_v2.rds")#with temp int
+```
+
+# 2.1 AF
+```{r}
+t_0 <- Sys.time()
+
+delta_temp <- diff(X_ref12_s200$temp03)#179(weight)
+sort_tempInt <- pop_death2$temp03_interval %>% unique() %>% sort()
+grid_data <- expand.grid(id_region = seq(1,2145), 
+                         temp03_interval = sort_tempInt)#2145*179
+merge_tempbin <- left_join(grid_data, pop_death2, 
+                         by = c("id_region", "temp03_interval"))
+merge_tempbin[is.na(merge_tempbin)] <- 0 
+
+rm(grid_data,sort_tempInt)
+
+list_tempbin2_v2 <- vector("list", 2145) # save results for 1000 samples in each muni
+valid_muniID <- pop_death$id_region[which(pop_death$deaths != 0)]
+## exclude id_region= 239  364  703  842  860 1032 1034 1648 1760 1765 1884 1886 1895
+for (m in valid_muniID){ 
+  list_tempbin2_v2[[m]] <- data.frame(AF= numeric(1000))
+  tempbin_m <- merge_tempbin %>% filter(id_region == m)
+  for (s in 1:1000){
+    RR <- exp(list_sample_byMuni[[m]][paste0("sample",s)]) %>% unlist() %>% as.vector() 
+    RR <- RR[21:200]#>12oC
+    AFx <- (RR-1)/RR
+    estAFx <- (AFx[-1] + AFx[-length(AFx)]) / 2 #179
+    list_tempbin2_v2[[m]][s,"AF"] <- sum(delta_temp * tempbin_m$deaths * estAFx) / pop_death$deaths[pop_death$id_region == m]
+  
+    
+  }
+  
+}
+
+
+saveRDS(list_tempbin2_v2, "list_tempbin2_v2.rds")
+
+t_1 <- Sys.time()
+print(t_1 - t_0)#3.754064 mins
+```
+
+```{r}
+list_tempbin2_v2 <- readRDS("list_tempbin2_v2.rds")
+map_muni_4 <- data.frame(id_region = seq(1,2145))
+invalid_muniID <- pop_death$id_region[which(pop_death$deaths == 0)]
+for (m in invalid_muniID){
+    list_tempbin2_v2[[m]] <-data.frame(AF = rep(0, 1000))
+ 
+}
+
+for (m in 1:2145){
+    map_muni_4$AFmed[m] <- median(list_tempbin2_v2[[m]]$AF)
+    map_muni_4$AFmean[m] <- mean(list_tempbin2_v2[[m]]$AF)
+    # run following line after meanPAF is calculated
+   map_muni_4$AF_post[m] <- mean(list_tempbin2_v2[[m]]$AF > meanAF)##
+}
+
+#which(map_muni_4$AFmed == 0)
+meanAF <- mean(map_muni_4$AFmean)#0.009979353
+```
+```{r}
+quantile(map_muni_4$AFmed, probs = seq(0,1,by = 0.1))
+```
+
+
+```{r}
+map_muni_4$AF_cut <- cut(map_muni_4$AFmed, 
+                          breaks = c(-0.005, 0, 0.01, 0.02, 0.1,0.22),
+                          labels = c("<0%", "0%-1%", 
+                                     "1%-2%","2%-10%", ">10%"))
+n_colors <- 6
+colors <- colorRampPalette(brewer.pal(9, "Reds"))(n_colors)[-1]
+cut_intervals <- c("<0%", "0%-1%", "1%-2%","2%-10%", ">10%")
+
+names(colors) <- cut_intervals
+colors
+```
+
+```{r}
+map_results <- left_join(Swiss_new, map_muni_4, by = c("id_region" = "id_region"))
+
+p_AF_tempbin <- ggplot() + geom_sf(data = map_results,col=NA) + 
+  aes(fill = AF_cut) + theme_bw() + 
+  scale_fill_manual(values = colors, drop = TRUE) + 
+  ggtitle("A. Attributable fraction of heat") +
+  labs(fill = " ")+
+  theme( 
+    axis.title = element_text(size = 15), 
+    axis.text = element_text(size = 15),
+    legend.title = element_text(size = 15), 
+    legend.text = element_text(size = 15),
+    plot.title = element_text(face = "bold")
+  )
+
+p_AF_tempbin
+```
+
+```{r}
+quantile(map_muni_4$AF_post, probs = seq(0,1,by = 0.1))
+```
+```{r}
+map_muni_4$AFcut_post<- cut(map_muni_4$AF_post,
+                            breaks = c(0,0.2,0.8,1),
+                            include.lowest = T,
+                            labels = c("0.0-0.2", "0.2-0.8", "0.8-1.0"))      
+
+
+n_colors <- 4
+colors <- colorRampPalette(brewer.pal(9, "Greens"))(n_colors)[-1]
+cut_intervals <- c("0.0-0.2", "0.2-0.8", "0.8-1.0")
+  
+names(colors) <- cut_intervals
+colors
+map_results <- left_join(Swiss_new, map_muni_4, by = c("id_region" = "id_region"))
+```
+
+```{r}
+# this plot for AF is in supplementary
+library(patchwork)
+
+p_AFpost_tempbin <- ggplot() + geom_sf(data = map_results, col = NA) + 
+  aes(fill = AFcut_post) + theme_bw() + 
+  scale_fill_manual(values = colors, drop = TRUE) + 
+  ggtitle("B. Exceedance probability Pr(AF>mean)") +
+  labs(fill = " ")+
+  theme( 
+    axis.title = element_text(size = 15), 
+    axis.text.x = element_text(size = 15), 
+    axis.text.y = element_blank(),
+    legend.title = element_text(size = 15), 
+    legend.text = element_text(size = 15),
+     plot.title = element_text(face = "bold")
+  )
+
+
+p_AF_tempbin
+p_AFpost_tempbin
+
+p_AFtempbin_fig <-p_AF_tempbin| p_AFpost_tempbin
+p_AFtempbin_fig
+  
+ggsave("p_AFtempbin_Heat_supple.png",p_AFtempbin_fig, width = 12.5, height = 4, dpi = 300)
+```
+
+```{r}
+#calculate ERH (based on AF)
+invalid_muniID <- pop_death$id_region[which(pop_death$deaths == 0)]
+for (m in invalid_muniID){
+    list_tempbin2_v2[[m]] <-data.frame(AF = rep(0, 1000))
+ 
+}
+for (m in 1:2145){
+  pop_death$heatDeaths[m] <- pop_death2 %>% filter(id_region == m)%>% select(deaths)%>% sum()
+}
+
+
+for (m in 1:2145){
+  # death within heat exposure range (>12)
+  list_tempbin2_v2[[m]]$death <- pop_death$heatDeaths[m] #Ym (within heat)
+  list_tempbin2_v2[[m]]$pop <- pop_death$population[m] #Pm
+  list_tempbin2_v2[[m]]$excessCnt <- list_tempbin2_v2[[m]]$AF*list_tempbin2_v2[[m]]$death #Y'm
+  list_tempbin2_v2[[m]]$excessRate <- list_tempbin2_v2[[m]]$AF*list_tempbin2_v2[[m]]$death/list_tempbin2_v2[[m]]$pop #ERH
+}
+
+saveRDS(list_tempbin2_v2, "list_tempbin2_v2ER.rds")
+```
+
+# 2.2 excess death
+```{r}
+list_tempbin2_v2 <- readRDS("list_tempbin2_v2ER.rds")
+```
+
+```{r}
+excessCnt_list <- lapply(list_tempbin2_v2, function(df) df$excessCnt)
+df_excessCnt <- do.call(cbind, excessCnt_list)%>% as.data.frame()
+#df_excessCnt <- cbind(id_region = seq(1,2145), df_excessCnt)
+colnames(df_excessCnt) <- c(paste0("reg", 1:2145))
+rownames(df_excessCnt) <- c(paste0("s", 1:1000))
+df_excessCnt$Switz_sum <- rowSums(df_excessCnt[,1:2145])
+median(df_excessCnt$Switz_sum)#2335.619
+quantile(df_excessCnt$Switz_sum, probs=0.025)#1794.191 
+quantile(df_excessCnt$Switz_sum, probs=0.975)#2894.861 
+```
+
+# 2.3 ERH
+```{r}
+map_muni_6 <- data.frame(id_region = seq(1,2145))
+
+
+
+for (m in 1:2145){
+   map_muni_6$excessRateMed[m] <- median(list_tempbin2_v2[[m]]$excessRate)
+   map_muni_6$excessRateMean[m] <- mean(list_tempbin2_v2[[m]]$excessRate)
+   # run after meanExcess is calculated
+   map_muni_6$excessRate_postMean[m] <-
+     mean(list_tempbin2_v2[[m]]$excessRate>meanExcess)
+}
+
+meanExcess <- mean(map_muni_6$excessRateMean)# (0.001006663 - Heat)
+```
+
+```{r}
+quantile(map_muni_6$excessRateMed, probs = seq(0,1,by = 0.1))
+```
+```{r}
+map_muni_6$excess_cut <- cut(map_muni_6$excessRateMed, 
+                          breaks = c(-1, 0, 0.0005, 0.001, 0.002,0.031),
+                          labels = c("<0", "0-0.5",
+                                     "0.5-1","1-2", ">2"))# change label to per thousand pop
+n_colors <- 6
+colors <- colorRampPalette(brewer.pal(9, "Reds"))(n_colors)[-1]
+cut_intervals <- c("<0", "0-0.5","0.5-1","1-2", ">2")
+
+names(colors) <- cut_intervals
+colors
+```
+```{r}
+map_results <- left_join(Swiss_new, map_muni_6, by = c("id_region" = "id_region"))
+
+p_ER <- ggplot() + geom_sf(data = map_results,col = NA) + 
+  aes(fill = excess_cut) + theme_bw() + 
+  scale_fill_manual(values = colors, drop = TRUE) + 
+  ggtitle("D. ERH (per thousand population)") +
+  labs(fill = " ")+
+  theme( 
+    axis.title = element_text(size = 15), 
+    axis.text = element_text(size = 15),
+    legend.title = element_text(size = 15), 
+    legend.text = element_text(size = 15),
+     plot.title = element_text(face = "bold")
+  )
+
+p_ER
+```
+
+```{r}
+quantile(map_muni_6$excessRate_postMean, probs = seq(0,1,by = 0.1))
+```
+
+```{r}
+map_muni_6$post_cut <- cut(map_muni_6$excessRate_postMean, 
+                          breaks = c(0,0.2,0.8,1), include.lowest = T, labels = c("0.0-0.2", "0.2-0.8", "0.8-1.0"))
+
+n_colors <- 4
+colors <- colorRampPalette(brewer.pal(9, "Greens"))(n_colors)[-1]
+cut_intervals <- c("0.0-0.2", "0.2-0.8", "0.8-1.0")
+
+names(colors) <- cut_intervals
+colors
+```
+```{r}
+map_results <- left_join(Swiss_new, map_muni_6, by = c("id_region" = "id_region"))
+
+p_ER_post <- ggplot() + geom_sf(data = map_results,col = NA) + 
+  aes(fill = post_cut) + theme_bw() + 
+  scale_fill_manual(values = colors, drop = TRUE) + 
+  ggtitle("E. Exceedance probability Pr(ERH>mean)") +
+  labs(fill = " ")+
+  theme( 
+    axis.title = element_text(size = 15), 
+    axis.text = element_text(size = 15),
+    legend.title = element_text(size = 15), 
+    legend.text = element_text(size = 15),
+    axis.text.y = element_blank(),
+     plot.title = element_text(face = "bold")
+  )
+
+p_ER_post
+
+p_ER_fig <-p_ER| p_ER_post
+
+p_ER_fig
+  
+ggsave("p_ER_fig_v2.png",p_ER_fig, width = 12.5, height = 4, dpi = 300)
+```
+
+#3. MMT 
+```{r}
+X_ref12_s200 <- readRDS("X_ref12_s200.rds")
+#which(X_ref12_s200$temp03 >=12) 
+# calculate cutoff points at 80% probability threshold
+t_0 <- Sys.time()
+MMT_df <- data.frame(temp03 = X_ref12_s200$temp03[21:200]) #temp>12
+MMT_df[paste0("reg", 1:2145)] <- replicate(2145, NA, simplify = FALSE)
+
+for (m in 1:2145){ #1:2145
+  spline_df <- list_sample_byMuni[[m]][21:200,]
+  for (t in 1:180){ #200-20 (20points with temp<12)
+    MMT_df[t,paste0("reg",m)] <- quantile(unlist(spline_df[t,2:1001]), probs = 0.201) ###0.201 for 80%sign
+  }
+}
+
+t_1 <- Sys.time()
+print(t_1-t_0)
+
+
+# saveRDS(MMT_df, "MMT_df12ref_80.rds")#48.09492 mins
+MMT_df80 <- readRDS("MMT_df12ref_80.rds") #180temp points
+```
+
+```{r, warning = F}
+MMT_map <- data.frame(id_region = seq(1,2145), 
+                      MMT80 = numeric(2145))
+for (m in 1:2145){
+  idx80 <- which(MMT_df80[, paste0("reg", m)] > 0)
+  MMT_map[m,"MMT80"] <- MMT_df80$temp03[min(idx80)] # 11 NA
+}
+
+mean(MMT_map$MMT80, na.rm = T) #20.41396
+quantile(MMT_map$MMT80, probs = seq(0,1,0.1), na.rm = TRUE)
+```
+
+```{r}
+
+MMT_map$MMT80cut <- cut(MMT_map$MMT80,
+                        c(12, 15,18, 20, 22,24, 29.5),
+                        labels = c("12-15", "15-18", "18-20", "20-22", "22-24", "24-29.5")) ###
+
+
+sum(is.na(MMT_map$MMT80cut)) #11
+
+n_colors <- 6
+colors <- viridis(n_colors)
+cut_intervals <-  c("12-15", "15-18", "18-20", "20-22", "22-24", "24-29.5")
+
+names(colors) <- cut_intervals
+colors
+```
+```{r}
+map_MMT <- left_join(Swiss_new, MMT_map, by = c("id_region" = "id_region"))
+
+p_map_MMT_80<- ggplot() + geom_sf(data = map_MMT, col = NA ) + 
+  aes(fill = MMT80cut ) + theme_bw() + 
+  scale_fill_manual(values = colors, drop = TRUE) + 
+  ggtitle("C. MMT (80% threshold probability)") +
+  labs(fill = "Temp (\u00B0C)")+
+  theme( 
+    axis.title = element_text(size = 15), 
+    axis.text = element_text(size = 15),
+    legend.title = element_text(size = 15), 
+    legend.text = element_text(size = 15),
+     plot.title = element_text(face = "bold"),
+    legend.position = "right", 
+    legend.justification = "center"
+  )
+
+p_map_MMT_80
+
+p_MMT_80_v2 <-  grid.arrange(grid.rect(gp = gpar(col = NA)), p_map_MMT_80,grid.rect(gp = gpar(col = NA)), nrow = 1, widths = c(0.4,1,0.4))
+
+ggsave("p_MMT_80_v2.png",p_MMT_80_v2, width = 12.5, height = 4, dpi = 300)
+```
+
+
