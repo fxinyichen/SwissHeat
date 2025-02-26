@@ -187,7 +187,7 @@ saveRDS(sp_byCanton_ref12, "sp_byCanton_ref12.rds")#10.51614 mins
 
 ```{r}
 ### to calculate the overall mean for posterior mean calculation in the chunk above
-sp_byCanton_ref12 <- readRDS("sp_byCanton_ref12.rds")
+sp_byCanton <- readRDS("sp_byCanton_ref12.rds")
 mean_byCanton <- data.frame(id_canton = seq(1,26),
                             mean_RR = numeric(26))
 for (c in 1:26){ # calculate mean RR over temp in each canton
