@@ -23,9 +23,12 @@ Swiss_new <- readRDS("Swiss_new_update2.rds")
 # cut deprivation (SEP) by percentile
 Swiss_new$SEP_cat <- cut(Swiss_new$deprivation, 
                           breaks = quantile(Swiss_new$deprivation, 
-                                            probs = c(0, 0.33, 0.66,  1)),
+                                            probs = c(0, 0.25, 0.75,  1)),
                           include.lowest = TRUE,
                           labels = c("1", "2", "3"))  
+Swiss_new$SEP_cat <- factor(Swiss_new$SEP_cat, 
+          levels = c("2", "1", "3"))
+Swiss_new$urbanicity <- factor(Swiss_new$urbanicity, levels = c("3", "2", "1"))
 ```
 
 
