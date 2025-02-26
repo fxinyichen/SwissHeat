@@ -191,7 +191,7 @@ sp_byCanton <- readRDS("sp_byCanton_ref12.rds")
 mean_byCanton <- data.frame(id_canton = seq(1,26),
                             mean_RR = numeric(26))
 for (c in 1:26){ # calculate mean RR over temp in each canton
-  mean_byCanton[c,"mean_RR"] <- mean(sp_byCanton_ref12[[c]]$mean)
+  mean_byCanton[c,"mean_RR"] <- mean(sp_byCanton[[c]]$mean)
 }
 
 overall_mean <- mean(mean_byCanton$mean_RR)#1.035029
