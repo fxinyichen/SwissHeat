@@ -168,15 +168,15 @@ approachs_comp$variable[approachs_comp$variable=="factor(language)2"] <- "French
 ##factor(language)3
 approachs_comp$variable[approachs_comp$variable=="factor(language)3:1"] <- "Italian" 
 approachs_comp$variable[approachs_comp$variable=="factor(language)3"] <- "Italian"
+##factor(urbanicity)1
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)1:1"] <- "Urban area"
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)1"] <- "Urban area"
 ##factor(urbanicity)2
-approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2:1"] <- "Medium density area"
-approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2"] <- "Medium density area"
-##factor(urbanicity)3
-approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)3:1"] <- "Low density area"
-approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)3"] <- "Low density area"
-## factor(SEP_cat)2
-approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)2"] <- "Median SEP"
-approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)2:1"] <- "Median SEP"
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2:1"] <- "Semi-urban area"
+approachs_comp$variable[approachs_comp$variable=="factor(urbanicity)2"] <- "Semi-urban area"
+## factor(SEP_cat)1
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)1"] <- "Low SEP"
+approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)1:1"] <- "Low SEP"
 ## factor(SEP_cat)3
 approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)3"] <- "High SEP"
 approachs_comp$variable[approachs_comp$variable=="factor(SEP_cat)3:1"] <- "High SEP"
@@ -190,6 +190,8 @@ approachs_comp$variable[approachs_comp$variable=="scale(greenspace)"] <- "Green 
 approachs_comp$variable[approachs_comp$variable=="scale(propAG85):1"] <- "Proportion (85+)"
 approachs_comp$variable[approachs_comp$variable=="scale(propAG85)"] <- "Proportion (85+)"
 ##method
+approachs_comp$Method[approachs_comp$Method=="without uncertainty"] <- "WU"
+approachs_comp$Method[approachs_comp$Method=="uncertainty propagation"] <- "UP"
 approachs_comp$variable <- factor(approachs_comp$variable, levels = unique(approachs_comp$variable))
 ```
 
